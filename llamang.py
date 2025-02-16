@@ -40,8 +40,8 @@ async def proces_with_llm(df: pd.DataFrame) -> list[dict]:
     print("TEXT", text)
 
     async for chunk in await client.chat(
-        model="llama3.2:latest",
-        # model="deepseek-r1:latest",
+        # model="llama3.2:latest",
+        model="deepseek-r1:latest",
         options={
             "temperature": 0.2, # configures the model's creativity
         },
