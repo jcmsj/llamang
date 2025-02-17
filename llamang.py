@@ -4,10 +4,11 @@ import pandas as pd
 import pytesseract
 from ollama import AsyncClient
 from cv2.typing import MatLike
+import preprocess
 from preview import preview
 
-# from phrase_bbox import include_bboxes
-from search import include_bboxes
+from phrase_bbox import include_bboxes
+# from search import include_bboxes
 
 def perform_ocr(image: MatLike) -> pd.DataFrame:
     """Perform OCR and return raw Tesseract data"""
@@ -35,41 +36,66 @@ async def proces_with_llm(df: pd.DataFrame) -> list[dict]:
     """Process OCR results with deepseek model"""
     client = AsyncClient()
     accumulated_response = ""
-    
-    text = " ".join(df["text"].tolist())
+
+    # build the full text input, add spaces, but also try to restore the newlines, by comparing the previous text's bbox w/ the current text's bbox, if they do not overlap, add a newline
+    text =""
+    for i, row in df.iterrows():
+        if i == 0:
+            text += row["text"]
+        else:
+            prev_row = df.iloc[i-1] # type: ignore
+            line_height = row["y2"] - row["y1"]
+            if prev_row["y2"] < row["y1"]:
+                text += "\n" + row["text"]
+            elif row["x1"] - prev_row["x2"] > line_height*2:
+                text += "\t" + row["text"]
+            else:
+                text += " " + row["text"]
+
+
+
     print("TEXT", text)
 
     async for chunk in await client.chat(
-        # model="llama3.2:latest",
-        model="deepseek-r1:latest",
+        model="llama3.2:latest",
+        # model="deepseek-r1:1.5b", # prompt is still incorrect with this model
         options={
             "temperature": 0.2, # configures the model's creativity
         },
         messages=[
             {
                 "role": "system",
-                "content": """
-                YOUR TASK: Extract key information like form fields, or some questions from a document's text by identifying keywords and their corresponding values, returning them as CSV data.
+                "content": f"""
+                   TASK: Extract relevant information from a document using the ocr results in the form of key:value pairs.
 
                 STEPS:
-                1. __Text Preprocessing__: Clean and normalize the text for invalid control characters.
-                2. __Structured Data Extraction__:
-                    - Identify named entities and their relationships
-                    - Flatten related fields so as to prevent nested structures
-                    - Don't include named entities that are too long, try to limit to 5 words
-                    - Recognize table-like structures and extract as new pairs
-                3. __Final output__: 
+                1. **Identify form field label**: look for short phrases or words that are likely to represent a field name in a form or document. These are usually the labels or titles of the fields. Prefer shorter phrases less than 5 words.
+
+                2. **Identify form field values**: look for short phrases or words that are likely to represent the values of the fields such as named entities. This includes things like names, organizations, locations, dates, times, products, units, currencies, subjects, events, and more. These are important to the context of the document. These are usually the actual information associated with the field label.
+
+                3. **pairing** Make key-value pairs of the form field label and the corresponding field value. Identify at least 20 of these pairs.
+
+                4. **Object schema**: Each entry should be a dictionary with the following keys:
+                    ``` {{"key": "field label", "value": "the field value"}}```
+
+                5 **Ensure unique keys**: Ensure unique keys for each entity type, avoiding reuse of the same key for different values.
+
+                6 **Table structure**: Try to identify tables and their structure using common delimeters and consistent spacing. Their headers or columns could be the field labels.
+                7. **Final output**: 
                     - Format the output as CSV with two columns: key,value
+                        - where key is the identified entity and value is the extracted value
                     - First line must be the header: key,value
                     - Properly escape commas and quotes in values
+                    - the keys should be human-readable and not too long. E.g. if you found an entity "Full name", use that key as it is, don't apply naming conventions.
                     - Example format:
                         ```csv
                         key,value
                         name,John Smith
                         amount,42
                         address,"123 Main St, Suite 100"
+                        height: "5'11\"" the double quotes are escaped
                         ```
-                    - Wrap the output in CSV code block: ```csv ... ```
+                    - Wrap the output in CSV code block for easy parsing: ```csv ... ```
                 """,
             },
             {"role": "user", "content": f"<ocr-input>{text}</ocr-input>"},
@@ -112,8 +138,9 @@ if __name__ == "__main__":
     # Check data folder for available pics
     document_path = "./data/business_permit.jpg"
     image = cv2.imread(document_path)
+    # image = cv2.resize(image, (0, 0), fx=2, fy=2)
+    image = preprocess._preprocess(preprocess.steps, image)
     # scale by 2
-    image = cv2.resize(image, (0, 0), fx=2, fy=2)
     result = asyncio.run(extract_document_info(image))
     print(result)
     preview(image, result, "./output.png")

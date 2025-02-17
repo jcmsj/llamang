@@ -1,16 +1,52 @@
 # Bounding box recovery: Labrador version
+import pandas as pd
 
-def include_bboxes(detailed_tess_results: list[dict], detected: list[dict]) -> list[dict]:
+def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[dict]:
     """Include bounding boxes to processed results
-    detailed: list of {text, bbox: [int,int,int,int]} dictionaries
-    # bbox is unnormalized
-    detected: list of {key, value} dictionaries, key is field name, value is field value
+    ocr_results: DataFrame with columns [text, x1, y1, x2, y2]
+    llm_metadata: list of {key, value} dictionaries
+    Returns list of dictionaries with added bbox
     """
-    
-    text_to_indexes: dict[str, int] = {}
 
-    for index, result in enumerate(detailed_tess_results):
-        text = result['text'].lower()
+    ocr_tuples = []
+    prev_row = None
+
+    for _, row in ocr_results.iterrows():
+        line_height = row["y2"] - row["y1"]
+
+        if prev_row is not None:
+            if prev_row["y2"] < row["y1"]:
+                ocr_tuples.append((
+                    "\n",
+                    row["x1"],
+                    row["y1"],
+                    row["x1"],
+                    row["y2"]
+                ))
+            elif row["x1"] - prev_row["x2"] > line_height*1.5:
+                ocr_tuples.append((
+                    "\t",
+                    row["x1"],
+                    row["y1"],
+                    row["x1"],
+                    row["y2"]
+                ))
+
+        
+        ocr_tuples.append((
+            row["text"],
+            row["x1"],
+            row["y1"],
+            row["x2"],
+            row ["y2"]
+        ))
+
+        prev_row = row
+    
+    text_to_indexes: dict[str, list[int]] = {}
+
+    for index, result in enumerate(ocr_tuples):
+        text = result[0].lower()
         
         if text in text_to_indexes:
             text_to_indexes[text].append(index)
@@ -21,7 +57,7 @@ def include_bboxes(detailed_tess_results: list[dict], detected: list[dict]) -> l
     results: list[dict] = []
     
     # Loop through detected fields and find the bounding box    
-    for _item in detected:
+    for _item in llm_metadata:
         item = _item.copy()
         
         # Get the shortest path of nodes showing the text
@@ -29,7 +65,7 @@ def include_bboxes(detailed_tess_results: list[dict], detected: list[dict]) -> l
         
         if path is not None:
             # Get the bbox of the path if found
-            bbox = get_path_bbox(detailed_tess_results, path['route'])
+            bbox = get_path_bbox(ocr_tuples, path['route'])
             item['bbox'] = bbox
             results.append(item)
         else:
@@ -39,15 +75,25 @@ def include_bboxes(detailed_tess_results: list[dict], detected: list[dict]) -> l
     
     
     
-def get_phrase_path(text_to_indexes: dict[str, int], phrase: str, key) -> dict:
+def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> dict:
+    import math
     print(phrase)    
     words = phrase.split()
     x = len(words)
+
+    if x <= 0:
+        return None
     
     skip_distance = 3 # distance to add when skipping a word in the phrase
-    max_distance = x**1.5
+    max_distance = x*math.log(x)
     
-    paths = [{'distance': 0, 'route': []}]
+    paths = [{'distance': 0, 'route': [-1]}]
+
+    if "\n" in text_to_indexes:
+        paths.extend([{'distance': 0, 'route': [i]} for i in text_to_indexes["\n"]])
+    if "\t" in text_to_indexes:
+        paths.extend([{'distance': 0, 'route': [i]} for i in text_to_indexes["\t"]])
+    
     
     for word in words:
         word = word.lower()
@@ -59,7 +105,7 @@ def get_phrase_path(text_to_indexes: dict[str, int], phrase: str, key) -> dict:
                 distance = path['distance']
                 route = path['route']
                 
-                if distance + skip_distance < max_distance:
+                if distance + skip_distance <= max_distance:
                     new_paths.append({
                         'distance': distance + skip_distance,
                         'route': route
@@ -79,17 +125,18 @@ def get_phrase_path(text_to_indexes: dict[str, int], phrase: str, key) -> dict:
                 if index in route:
                     continue
                 
-                new_distance = 0
-                if len(route) > 0:
-                     new_distance = abs(route[-1] - index) - 1
+                new_distance = index - route[-1] - 1
+
+                if new_distance < 0:
+                    continue
                 
-                if new_distance <= skip_distance and distance + new_distance < max_distance:
+                if new_distance <= skip_distance and distance + new_distance <= max_distance:
                     new_paths.append({
                         'distance': distance + new_distance,
                         'route': route + [index]
                     })
                 
-                if skip_distance <= new_distance and distance + skip_distance < max_distance:
+                if skip_distance <= new_distance and distance + skip_distance <= max_distance:
                     # Add new path that skips a word in the phrase instead
                     new_paths.append({
                         'distance': distance + skip_distance,
@@ -100,22 +147,22 @@ def get_phrase_path(text_to_indexes: dict[str, int], phrase: str, key) -> dict:
         
     paths = sorted(paths, key=lambda x: x['distance'])
     
-    if len(words) <= 0 or len(paths) <= 0 or len(paths[0]['route']) <= 0:
+    if len(paths) <= 0 or len(paths[0]['route']) <= 0:
         return None
     
     return paths[0]
 
 
 
-def get_path_bbox(results: list[dict], route: list[int]) -> tuple[int, int, int, int]:
-    bboxes = [results[index]['bbox'] for index in route]
+def get_path_bbox(results: list[tuple], route: list[int]) -> tuple[int, int, int, int]:
+    bboxes = [results[index] for index in route]
     
-    x0 = min(int(bbox[0]) for bbox in bboxes)
-    y0 = min(int(bbox[1]) for bbox in bboxes)
-    x1 = max(int(bbox[2]) for bbox in bboxes)
-    y1 = max(int(bbox[3]) for bbox in bboxes)
+    x1 = min(int(bbox[1]) for bbox in bboxes)
+    y1 = min(int(bbox[2]) for bbox in bboxes)
+    x2 = max(int(bbox[3]) for bbox in bboxes)
+    y2 = max(int(bbox[4]) for bbox in bboxes)
     
-    return (x0, y0, x1, y1)
+    return (x1, y1, x2, y2)
 
 
 def main():
