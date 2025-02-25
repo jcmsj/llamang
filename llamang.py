@@ -47,7 +47,7 @@ async def proces_with_llm(df: pd.DataFrame) -> list[dict]:
             line_height = row["y2"] - row["y1"]
             if prev_row["y2"] < row["y1"]:
                 text += "\n" + row["text"]
-            elif row["x1"] - prev_row["x2"] > line_height*2:
+            elif row["x1"] - prev_row["x2"] > line_height*1.5:
                 text += "\t" + row["text"]
             else:
                 text += " " + row["text"]
@@ -136,9 +136,23 @@ import cv2
 if __name__ == "__main__":
 
     # Check data folder for available pics
-    document_path = "./data/business_permit.jpg"
+    document_path = "c:\\Users\\jcsan\\Downloads\\Examples\\1Sty_3CL_7x9m_Standard_page-0001.jpg"
     image = cv2.imread(document_path)
-    # image = cv2.resize(image, (0, 0), fx=2, fy=2)
+    # image = cv2.resize(image, (0, 0), fx=1.2, fy=1.2)
+    h = image.shape[0]
+    w = image.shape[1]
+
+    dpi = 200
+    scale = 1
+
+    if w < h:
+        scale = dpi/(w/8.5)
+    else:
+        scale = dpi/(h/8.5)
+    
+    if scale != 1:
+        image = cv2.resize(image, (0, 0), fx=scale, fy=scale)
+
     image = preprocess._preprocess(preprocess.steps, image)
     # scale by 2
     result = asyncio.run(extract_document_info(image))

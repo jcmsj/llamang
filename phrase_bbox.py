@@ -17,19 +17,11 @@ def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[
         if prev_row is not None:
             if prev_row["y2"] < row["y1"]:
                 ocr_tuples.append((
-                    "\n",
-                    row["x1"],
-                    row["y1"],
-                    row["x1"],
-                    row["y2"]
+                    "\n"
                 ))
-            elif row["x1"] - prev_row["x2"] > line_height*1.5:
+            elif row["x1"] - prev_row["x2"] > line_height*1:
                 ocr_tuples.append((
-                    "\t",
-                    row["x1"],
-                    row["y1"],
-                    row["x1"],
-                    row["y2"]
+                    "\t"
                 ))
 
         
@@ -61,7 +53,7 @@ def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[
         item = _item.copy()
         
         # Get the shortest path of nodes showing the text
-        path = get_phrase_path(text_to_indexes, item['value'], item['key'])
+        path = get_phrase_path(text_to_indexes, item['value'], ocr_tuples)
         
         if path is not None:
             # Get the bbox of the path if found
@@ -75,7 +67,7 @@ def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[
     
     
     
-def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> dict:
+def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, ocr_tuples: list[tuple]) -> dict:
     import math
     print(phrase)    
     words = phrase.split()
@@ -89,10 +81,10 @@ def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> 
     
     paths = [{'distance': 0, 'route': [-1]}]
 
-    if "\n" in text_to_indexes:
-        paths.extend([{'distance': 0, 'route': [i]} for i in text_to_indexes["\n"]])
     if "\t" in text_to_indexes:
         paths.extend([{'distance': 0, 'route': [i]} for i in text_to_indexes["\t"]])
+    if "\n" in text_to_indexes:
+        paths.extend([{'distance': 0, 'route': [i]} for i in text_to_indexes["\n"]])
     
     
     for word in words:
@@ -128,7 +120,11 @@ def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> 
                 new_distance = index - route[-1] - 1
 
                 if new_distance < 0:
+                    # new_distance = -new_distance*skip_distance
                     continue
+
+                if ocr_tuples[index][0] == "\n":
+                    new_distance = 0
                 
                 if new_distance <= skip_distance and distance + new_distance <= max_distance:
                     new_paths.append({
@@ -147,7 +143,7 @@ def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> 
         
     paths = sorted(paths, key=lambda x: x['distance'])
     
-    if len(paths) <= 0 or len(paths[0]['route']) <= 0:
+    if len(paths) <= 0 or len(paths[0]['route']) <= 1:
         return None
     
     return paths[0]
@@ -157,10 +153,10 @@ def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, key) -> 
 def get_path_bbox(results: list[tuple], route: list[int]) -> tuple[int, int, int, int]:
     bboxes = [results[index] for index in route]
     
-    x1 = min(int(bbox[1]) for bbox in bboxes)
-    y1 = min(int(bbox[2]) for bbox in bboxes)
-    x2 = max(int(bbox[3]) for bbox in bboxes)
-    y2 = max(int(bbox[4]) for bbox in bboxes)
+    x1 = min(int(bbox[1]) for bbox in bboxes if len(bbox) > 1)
+    y1 = min(int(bbox[2]) for bbox in bboxes if len(bbox) > 1)
+    x2 = max(int(bbox[3]) for bbox in bboxes if len(bbox) > 1)
+    y2 = max(int(bbox[4]) for bbox in bboxes if len(bbox) > 1)
     
     return (x1, y1, x2, y2)
 
