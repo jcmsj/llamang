@@ -1,5 +1,7 @@
 # Bounding box recovery: Labrador version
 import pandas as pd
+import math
+import json
 
 def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[dict]:
     """Include bounding boxes to processed results
@@ -68,8 +70,7 @@ def include_bboxes(ocr_results: pd.DataFrame, llm_metadata: list[dict]) -> list[
     
     
 def get_phrase_path(text_to_indexes: dict[str, list[int]], phrase: str, ocr_tuples: list[tuple]) -> dict:
-    import math
-    print(phrase)    
+    # print(phrase)    
     words = phrase.split()
     x = len(words)
 
@@ -162,7 +163,6 @@ def get_path_bbox(results: list[tuple], route: list[int]) -> tuple[int, int, int
 
 
 def main():
-    import json
 
     with open('llm_output.json', 'r') as file:
         detected = json.load(file)

@@ -10,15 +10,15 @@ def preview(image:MatLike, results:list[dict], out_filename:str):
             continue
         x1, y1, x2, y2 = item["bbox"]
 
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 1)
         cv2.putText(
-            image,
-            item["key"],
-            (x1, y1),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2,
+            img=image,
+            text=item["key"],
+            org=(x1, y1),
+            fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+            fontScale=0.5,
+            color=(0, 255, 0),
+            thickness=1,
         )
     # save
     cv2.imwrite(out_filename, image)

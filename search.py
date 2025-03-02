@@ -68,7 +68,7 @@ def find_text_span(answer: str, details: pd.DataFrame) -> Optional[tuple[int, in
 
     strategies: list[tuple[str, Callable]] = [
         ("exact", try_exact_match),
-        # ("fuzzy", try_fuzzy_match),
+        ("fuzzy", try_fuzzy_match),
         # ("token", try_token_match),
     ]
 
