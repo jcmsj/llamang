@@ -1,3 +1,4 @@
+import os
 import fitz  # PyMuPDF
 import json
 import argparse
@@ -52,13 +53,15 @@ def main():
     # Set up the argument parser
     parser = argparse.ArgumentParser(description="Extract form fields from a PDF file into a JSON file")
     parser.add_argument("input_pdf", help="Path to the input PDF file")
-    parser.add_argument("-o", "--output", help="Path to the output JSON file (default: fields.json)", default="fields.json")
+    parser.add_argument("-o", "--output", help="Path to the output JSON file (default: fields.json)")
     # --format, -f: json|csv
     parser.add_argument("-f", "--format", default='csv', help="Output format (json or csv)")
-    
     # Parse arguments
     args = parser.parse_args()
     
+    # Set default output file as using basename of input file
+    if args.output is None:
+        args.output = f"{os.path.splitext(os.path.basename(args.input_pdf))[0]}.{args.format}"
     try:
         # Extract form fields
         form_fields = extract_pdf_form_fields(args.input_pdf)
