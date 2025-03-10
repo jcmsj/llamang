@@ -1,8 +1,8 @@
 import json
 from random import randint, random
-import fitz  # PyMuPDF
 import csv
-from numpy import var
+import fillpdf
+import fillpdf.fillpdfs
 import ollama
 import argparse
 import os
@@ -10,6 +10,7 @@ from datetime import datetime
 from faker import Faker
 
 from ext import extract_pdf_form_fields, to_csv
+from update_pdf_form import update_pdf_form
 
 def generate_hash(previous_hash=None):
     """Generate a new hash or derive one from a previous hash for variation randomization."""
@@ -67,13 +68,13 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
 
     # Final output as json
     steps = [
-        "Please generate appropriate data for each field, maintaining coherence between related fields.",
-        "Try to infer based on the field name what format the data should be in.",
-        "Consider also based on the field name when it's ok to reuse a previous value.",
+        "Generate appropriate data for each field, maintaining coherence between related fields",
+        "Infer the field value based on the field name",
+        "you may reuse values based on field name",
         f"For identifiers like names, be creative as this is the #{variation} time I made you do this",
         "You can delegate to the Python Faker library by outputting the value as 'faker:[method_name]' (e.g. 'faker:name', 'faker:address', 'faker:phone_number')",
-        "No need to provide explanations or context.",
-        "output as a JSON object with field names as keys and your generated value as string."
+        "No need to provide explanations or context",
+        "Output as a JSON object with field names as keys and your generated value as string"
     ]
     prompt += "Instructions:\n"
     for i in range(len(steps)):
@@ -81,7 +82,7 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
 
     # Add hash information to the prompt to further influence variation
     if variation_hash is not None:
-        prompt += f"\nVariation hash: {variation_hash}"
+        prompt += f"\nHere's a hash to help you be creative: {variation_hash}"
 
     try:
         response = ollama.chat(
@@ -121,49 +122,10 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
         print(f"Error generating values: {e}")
         return fields
 
-def update_pdf_form(pdf_path, fields_by_page, output_path):
-    """Update the PDF form with the generated values."""
-    doc = fitz.open(pdf_path)
-    
-    for page_key, fields in fields_by_page.items():
-        # Extract page number from the key (e.g., "page_1" -> 0)
-        page_num = int(page_key.split('_')[1]) - 1
-        
-        if page_num < len(doc):
-            page = doc[page_num]
-            
-            # Update each field on this page
-            for field in fields:
-                if field['name']:  # Only process fields with names
-                    widgets = page.widgets()
-                    for widget in widgets:
-                        if widget.field_name == field['name']:
-                            widget.field_value = field['value']
-                            widget.update()
-    
-    # Save the updated PDF
-    doc.save(output_path)
-    doc.close()
-
-def save_generated_fields_to_csv(fields_by_page, output_csv):
-    """Save the generated field values to a CSV file."""
-    with open(output_csv, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Page', 'Field Name', 'Field Type', 'Field Value'])
-        
-        for page_key, fields in fields_by_page.items():
-            for field in fields:
-                writer.writerow([
-                    page_key,
-                    field['name'],
-                    field['type'],
-                    field['value']
-                ])
-
 def main():
     parser = argparse.ArgumentParser(description="Generate form field values and update PDF forms")
     parser.add_argument("input_pdf", help="Path to the input PDF template")
-    parser.add_argument("input_csv", help="Path to the CSV with form field information")
+    parser.add_argument("input_csv", nargs='?', help="Path to the CSV with form field information (optional)")
     parser.add_argument("-o", "--output", help="Path to the output PDF file")
     parser.add_argument("-c", "--csv", help="Path to the output CSV file for generated values")
     parser.add_argument("-m", "--model", default="llama3.2:latest", help="Ollama model to use (default: llama3.2:latest)")
@@ -174,6 +136,26 @@ def main():
     # Generate default output paths if not provided
     base_name = os.path.splitext(os.path.basename(args.input_pdf))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Handle case where input_csv is not provided
+    if args.input_csv is None:
+        # Try to find a CSV file with the same basename as the PDF
+        pdf_dir = os.path.dirname(args.input_pdf)
+        possible_csv_paths = [
+            os.path.join(pdf_dir, f"{base_name}.csv"),
+            os.path.join(pdf_dir, f"{base_name}_fields.csv"),
+        ]
+        
+        for path in possible_csv_paths:
+            if os.path.exists(path):
+                args.input_csv = path
+                print(f"Using CSV file: {args.input_csv}")
+                break
+        
+        if args.input_csv is None:
+            print("Error: No input CSV provided and no matching CSV file found.")
+            print(f"Tried looking for: {', '.join(possible_csv_paths)}")
+            return
     
     try:
         # Read form fields from CSV
@@ -196,10 +178,12 @@ def main():
                 
             # Set the output paths for this variation
             if not args.output:
-                output_pdf = f"{base_name}_generated_{timestamp}{variation_suffix}.pdf"
+                output_pdf_form = f"{base_name}_form_{timestamp}{variation_suffix}.pdf"
+                output_pdf_flat = f"{base_name}_flat_{timestamp}{variation_suffix}.pdf"
             else:
                 name, ext = os.path.splitext(args.output)
-                output_pdf = f"{name}{variation_suffix}{ext}"
+                output_pdf_form = f"{name}_form{variation_suffix}{ext}"
+                output_pdf_flat = f"{name}_flat{variation_suffix}{ext}"
             
             if not args.csv:
                 csv_base_name = os.path.splitext(os.path.basename(args.input_csv))[0]
@@ -218,15 +202,19 @@ def main():
                 updated_fields = generate_form_values(fields, args.model, variation, current_hash)
                 updated_fields_by_page[page_key] = updated_fields
             
-            # Update the PDF form
-            print(f"Updating PDF form and saving to {output_pdf}")
-            update_pdf_form(args.input_pdf, updated_fields_by_page, output_pdf)
+            # Create version 1: Update the PDF form fields (current behavior)
+            print(f"Creating form version: Updating PDF form fields and saving to {output_pdf_form}")
+            update_pdf_form(args.input_pdf, updated_fields_by_page, output_pdf_form)
+            
+            # Create version 2: Write text directly onto the PDF
+            print(f"Creating flat version: Writing text directly to PDF and saving to {output_pdf_flat}")
+            fillpdf.fillpdfs.flatten_pdf(output_pdf_form, output_pdf_flat)
             
             # Reuse the updated fields to save to CSV
-            generated_fields = extract_pdf_form_fields(output_pdf)
+            generated_fields = extract_pdf_form_fields(output_pdf_form)
             to_csv(generated_fields, output_csv)
             
-            print(f"Completed variation {variation}")
+            print(f"Completed variation {variation} - created form version and flat version")
         
         print("\nAll variations completed!")
     

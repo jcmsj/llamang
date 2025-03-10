@@ -2,6 +2,7 @@ import os
 import fitz  # PyMuPDF
 import json
 import argparse
+import glob
 
 
 def extract_pdf_form_fields(pdf_path):
@@ -49,35 +50,73 @@ def to_csv(form_fields, output_csv):
             for field in fields:
                 f.write(f"{page_num},{field['name']},{field['type']},{field['value']},\"{field['rect']}\"\n")
 
+
+def process_pdf(input_pdf, output=None, output_format='csv'):
+    """Process a single PDF file."""
+    # Set default output file using basename of input file
+    if output is None:
+        output = f"{os.path.splitext(os.path.basename(input_pdf))[0]}.{output_format}"
+    
+    try:
+        # Extract form fields
+        form_fields = extract_pdf_form_fields(input_pdf)
+        
+        # Write output
+        if output_format == 'csv':
+            to_csv(form_fields, output)
+        else:
+            with open(output, "w", encoding="utf-8") as f:
+                json.dump(form_fields, f, indent=4)
+        
+        print(f"Form fields from {input_pdf} successfully extracted to {output}")
+        return True
+    
+    except Exception as e:
+        print(f"Error processing {input_pdf}: {e}")
+        return False
+
+
 def main():
     # Set up the argument parser
-    parser = argparse.ArgumentParser(description="Extract form fields from a PDF file into a JSON file")
-    parser.add_argument("input_pdf", help="Path to the input PDF file")
-    parser.add_argument("-o", "--output", help="Path to the output JSON file (default: fields.json)")
-    # --format, -f: json|csv
-    parser.add_argument("-f", "--format", default='csv', help="Output format (json or csv)")
+    parser = argparse.ArgumentParser(description="Extract form fields from PDF files into JSON or CSV files")
+    parser.add_argument("input_path", help="Path to the input PDF file or folder containing PDF files")
+    parser.add_argument("-o", "--output", help="Path to the output file (default: based on input filename)")
+    parser.add_argument("-f", "--format", default='csv', choices=['csv', 'json'], 
+                        help="Output format (json or csv)")
     # Parse arguments
     args = parser.parse_args()
     
-    # Set default output file as using basename of input file
-    if args.output is None:
-        args.output = f"{os.path.splitext(os.path.basename(args.input_pdf))[0]}.{args.format}"
-    try:
-        # Extract form fields
-        form_fields = extract_pdf_form_fields(args.input_pdf)
+    # Check if input path is a directory
+    if os.path.isdir(args.input_path):
+        # Find all PDF files in the directory
+        pdf_files = glob.glob(os.path.join(args.input_path, "*.pdf"))
         
-        # Write to JSON file
-        if args.format == 'csv':
-            # Write to CSV file
-            to_csv(form_fields, args.output)
-        else:
-            with open(args.output, "w", encoding="utf-8") as f:
-                json.dump(form_fields, f, indent=4)
+        if not pdf_files:
+            print(f"No PDF files found in {args.input_path}")
+            return
+            
+        # Process each PDF file
+        success_count = 0
+        for pdf_file in pdf_files:
+            output_file = None
+            if args.output:
+                # If output is specified and it's a directory, use it as the output directory
+                if os.path.isdir(args.output):
+                    base_name = f"{os.path.splitext(os.path.basename(pdf_file))[0]}.{args.format}"
+                    output_file = os.path.join(args.output, base_name)
+                else:
+                    # If single output file is specified for multiple PDFs, skip
+                    print("Warning: Single output file specified for multiple PDFs. Using default naming.")
+            
+            # Process the PDF file
+            if process_pdf(pdf_file, output_file, args.format):
+                success_count += 1
         
-        print(f"Form fields successfully extracted to {args.output}")
+        print(f"Processed {success_count} out of {len(pdf_files)} PDF files")
     
-    except Exception as e:
-        print(f"Error: {e}")
+    else:
+        # Process single PDF file
+        process_pdf(args.input_path, args.output, args.format)
 
 
 if __name__ == "__main__":
