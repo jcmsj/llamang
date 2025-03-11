@@ -26,7 +26,7 @@ def generate_hash(previous_hash=None):
         # Derive a new hash from the previous one
         return hash(str(previous_hash) + str(random()))
 
-def generate_form_values(fields, model_name,document_title, variation=1, variation_hash=None):
+def generate_form_values(fields, model_name, document_title, fallback_model=None, min_fill_percentage=0.6):
     """Generate new values for form fields using Ollama."""
     # Group fields by type
     text_fields = [field for field in fields if field["type"] == "Text"]
@@ -58,10 +58,6 @@ def generate_form_values(fields, model_name,document_title, variation=1, variati
         "Output as a JSON object with field names as keys and your generated value as string"
     ]
 
-
-    # if chat_history:
-        # prompt += "generate another set of values for the same fields\n"
-    # else:
     prompt += "Instructions:\n"
     for i in range(len(steps)):
         prompt += f"{i+1}. {steps[i]}\n"
@@ -71,51 +67,73 @@ def generate_form_values(fields, model_name,document_title, variation=1, variati
     prompt += f"<Form Fields>\n{keyval}\n</Form Fields>\n\n"
     with open("prompt.txt", "w") as f:
         f.write(prompt)
-    try:
-        # Initialize messages list with previous chat history if available
-        messages = []
-        
-        # Add the current prompt
-        messages.append({"role": "user", "content": prompt})
-       
-        response = ollama.Client().chat(
-            model=model_name,
-            messages=messages,
-            options={
-                "temperature": 0.7,
-                "seed": randint(0, 1000000),
-                "top_p": 1,
-                "top_k": 0,
-                "min_p": 0.05,
-            },
-            format="json",
-        )
-        generated_text = response["message"]["content"].strip()
-        # Parse the JSON response
-        results = json.loads(generated_text)
+    
+    def process_with_model(current_model):
+        try:
+            # Initialize messages list 
+            messages = []
+            
+            # Add the current prompt
+            messages.append({"role": "user", "content": prompt})
+           
+            print(f"Generating values using model: {current_model}")
+            response = ollama.Client().chat(
+                model=current_model,
+                messages=messages,
+                options={
+                    "temperature": 0.7,
+                    "seed": randint(0, 1000000),
+                    "top_p": 1,
+                    "top_k": 0,
+                    "min_p": 0.05,
+                },
+                format="json",
+            )
+            generated_text = response["message"]["content"].strip()
+            # Parse the JSON response
+            results = json.loads(generated_text)
 
-        # Update the text fields with the generated values
-        for field in text_fields:
-            value = results.get(field["name"], field["value"])
+            # Update the text fields with the generated values
+            filled_fields = 0
+            for field in text_fields:
+                value = results.get(field["name"], None)
 
-            # Process Faker directives
-            if isinstance(value, str) and value.lower().startswith("faker:"):
-                faker_method = value.split(":", 1)[1].strip()
-                try:
-                    # Get the method from faker and call it
-                    faker_func = getattr(faker, faker_method)
-                    field["value"] = faker_func()
-                except (AttributeError, TypeError) as e:
-                    print(f"Error with Faker method '{faker_method}': {e}")
-                    field["value"] = field["value"]  # Keep original value on error
-            else:
-                field["value"] = value
-
-        # Return the updated fields and the updated chat history
-        return text_fields
-    except Exception as e:
-        print(f"Error generating values: {e}")
-        return fields
+                # Count filled fields
+                if value is not None and value.strip() != "":
+                    filled_fields += 1
+                    
+                    # Process Faker directives
+                    if isinstance(value, str) and value.lower().startswith("faker:"):
+                        faker_method = value.split(":", 1)[1].strip()
+                        try:
+                            # Get the method from faker and call it
+                            faker_func = getattr(faker, faker_method)
+                            field["value"] = faker_func()
+                        except (AttributeError, TypeError) as e:
+                            print(f"Error with Faker method '{faker_method}': {e}")
+                            field["value"] = field["value"]  # Keep original value on error
+                    else:
+                        field["value"] = value
+            
+            # Calculate fill percentage
+            fill_percentage = filled_fields / len(text_fields) if text_fields else 1.0
+            
+            return text_fields, fill_percentage
+        except Exception as e:
+            print(f"Error generating values with model {current_model}: {e}")
+            return fields, 0.0
+    
+    # First attempt with the primary model
+    updated_fields, fill_percentage = process_with_model(model_name)
+    
+    # If we have a fallback model and didn't get enough fields filled, try again
+    if fallback_model and fill_percentage < min_fill_percentage:
+        print(f"Only {fill_percentage:.1%} of fields were filled (minimum required: {min_fill_percentage:.1%})")
+        print(f"Retrying with fallback model: {fallback_model}")
+        updated_fields, new_fill_percentage = process_with_model(fallback_model)
+        print(f"Fallback model filled {new_fill_percentage:.1%} of fields")
+    
+    return updated_fields
 
 
 def main():
@@ -136,12 +154,30 @@ def main():
         help="Ollama model to use (default: llama3.2:latest)",
     )
     parser.add_argument(
+        "--fallback-model",
+        help="Fallback model to use if primary model doesn't fill enough fields",
+    )
+    parser.add_argument(
+        "--min-fill-percent",
+        type=float,
+        default=0.7,
+        help="Minimum percentage of fields that must be filled (default: 0.7)",
+    )
+    parser.add_argument(
         "-n",
         "--variations",
         type=int,
         default=1,
         help="Number of variations to generate (default: 1)",
     )
+    parser.add_argument(
+        "-s",
+        "--startvariation",
+        type=int,
+        default=1,
+        help="The starting variation number (default: 1)",
+    )
+
     parser.add_argument(
         "-d", "--directory-mode", 
         action="store_true",
@@ -151,6 +187,9 @@ def main():
     # Check if we're in directory mode
     # Generate new values page by page
     print(f"Generating new values with {args.model} model")
+    if args.fallback_model:
+        print(f"Using {args.fallback_model} as fallback if less than {args.min_fill_percent:.1%} of fields are filled")
+    
     failed_logs = open("failed_logs.txt", "w")
     if args.directory_mode:
         if not os.path.isdir(args.input):
@@ -174,18 +213,18 @@ def main():
             print(f"\nProcessing {pdf_file}")
             try:
                 process_pdf(pdf_file, args.input_csv, args.output,
-                       args.model, args.variations)
+                       args.model, args.variations, args.fallback_model, args.min_fill_percent, args.startvariation)
             except OCRException as e:
                 print(f"Error processing {pdf_file}: {e}")
                 failed_logs.write(f"{pdf_file}: {e}\n")
     else:
         # Process a single PDF file
         process_pdf(args.input, args.input_csv, args.output, 
-                   args.model, args.variations)
+                   args.model, args.variations, args.fallback_model, args.min_fill_percent)
 
     print("\nAll operations completed!")
 
-def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
+def process_pdf(input_pdf, input_csv, output_dir, model_name, variations, fallback_model=None, min_fill_percent=0.6, start_variation=1):
     # Generate default output paths if not provided
     base_name = os.path.splitext(os.path.basename(input_pdf))[0]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -227,7 +266,7 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
                 print(f"  {field['name']}")
     
     # Generate variations
-    for variation in range(1, variations + 1):
+    for variation in range(start_variation, variations + 1):
         # Generate or update hash for this variation
         should_redo = 10 # maximum number of retries
         while should_redo:
@@ -264,9 +303,13 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
                 updated_fields_by_page = {}
                 for page_key, fields in fields_by_page.items():
                     print(f"Processing {page_key}")
-                    # Pass the current chat history for this page
+                    # Generate form values with fallback model support
                     updated_fields = generate_form_values(
-                        copy.deepcopy(fields), model_name, base_name, variation, current_hash,
+                        copy.deepcopy(fields), 
+                        model_name, 
+                        base_name,
+                        fallback_model,
+                        min_fill_percent
                     )
                     updated_fields_by_page[page_key] = updated_fields
                     
