@@ -103,8 +103,8 @@ def update_rects_to_actual_textbox(pdf_path):
 
 def implode_boxes(xywht: list[tuple]) -> str:
     """Implode a list of boxes into a single string."""
-    return " ".join([box[4] for box in xywht]).strip()
-
+    return " ".join([box[4] for box in xywht if box[4] != '']).strip()
+ 
 def enclose_boxes(xywht: list[tuple]) -> tuple:
     """Enclose a list of boxes within a bounding box."""
     # return (min_x, min_y, width, height)

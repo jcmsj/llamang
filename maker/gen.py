@@ -51,7 +51,11 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
         "Infer field value based on field name",
         "you may reuse values based on field name",
         f"Be creative for identifiers like names, this is the #{variation} time I made you do this",
-        "You can delegate with Python Faker library by outputting a value as 'faker:[method_name]' (e.g. 'faker:name', 'faker:address', 'faker:phone_number')",
+        "You can delegate with Python Faker library by outputting 'faker:[method_name]'",
+        "Available methods:"
+        """ name, first_name, last_name,email, safe_email, company_email,date_of_birth, date, date_time,phone_number,address,job,prefix, suffix,url,address, city, state, zipcode, country, latitude, longitude,ssn, isbn10, isbn13, ean, ean13, ean8,credit_card_number, credit_card_provider, credit_card_security_code, credit_card_expire,license_plate,paragraph, sentence, word, text,password,random_int, random_number,user_name,domain_name\n
+        """
+        "field values should not be nested json",
         "No need to provide explanations or context",
         "Output as a JSON object with field names as keys and your generated value as string"
         "Properly escape commas that would disrupt the JSON format",
