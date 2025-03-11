@@ -3,7 +3,7 @@ import fitz  # PyMuPDF
 import json
 import argparse
 import glob
-
+from pytesseract import image_to_boxes
 
 def extract_pdf_form_fields(pdf_path):
     """Extract form fields from a PDF file."""
@@ -40,7 +40,6 @@ def extract_pdf_form_fields(pdf_path):
     doc.close()
     
     return form_fields
-
 
 def to_csv(form_fields, output_csv):
     """Write form fields to a CSV file."""
