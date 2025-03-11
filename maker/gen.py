@@ -1,3 +1,4 @@
+import copy
 import json
 from random import randint, random
 import fillpdf
@@ -25,7 +26,7 @@ def generate_hash(previous_hash=None):
         # Derive a new hash from the previous one
         return hash(str(previous_hash) + str(random()))
 
-def generate_form_values(fields, model_name, variation=1, variation_hash=None):
+def generate_form_values(fields, model_name,document_title, variation=1, variation_hash=None):
     """Generate new values for form fields using Ollama."""
     # Group fields by type
     text_fields = [field for field in fields if field["type"] == "Text"]
@@ -41,45 +42,55 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
     faker = Faker()
 
     # Construct prompt
-    prompt = "Generate realistic but fictional values for the following form fields based on this json information\n\n"
-
-    prompt += f"<Form Fields>\n{keyval}\n</Form Fields>\n\n"
+    prompt = ""
 
     # Final output as json
     steps = [
-        "Generate data for each field, maintaining coherence between these",
+        f"ROLE: You're normally a `{faker.job()}`, but today you're an assistant at a Patent Office",
+        "Your task is to make random data for each field, maintaining coherence between the given fields",
         "Infer field value based on field name",
         "you may reuse values based on field name",
-        f"Be creative for identifiers like names, this is the #{variation} time I made you do this",
-        "You can delegate with Python Faker library by outputting 'faker:[method_name]'",
-        "Available methods:"
-        """ name, first_name, last_name,email, safe_email, company_email,date_of_birth, date, date_time,phone_number,address,job,prefix, suffix,url,address, city, state, zipcode, country, latitude, longitude,ssn, isbn10, isbn13, ean, ean13, ean8,credit_card_number, credit_card_provider, credit_card_security_code, credit_card_expire,license_plate,paragraph, sentence, word, text,password,random_int, random_number,user_name,domain_name\n
-        """
+        "don't use unusual characters for values",
+        f"Be very creative for named entities",
         "field values should not be nested json",
+        "Properly escape commas that would disrupt the JSON format",
         "No need to provide explanations or context",
         "Output as a JSON object with field names as keys and your generated value as string"
-        "Properly escape commas that would disrupt the JSON format",
     ]
+
+
+    # if chat_history:
+        # prompt += "generate another set of values for the same fields\n"
+    # else:
     prompt += "Instructions:\n"
     for i in range(len(steps)):
         prompt += f"{i+1}. {steps[i]}\n"
 
-    # Add hash information to the prompt to further influence variation
-    if variation_hash is not None:
-        prompt += f"\nHere's a hash to help you be creative: {variation_hash}"
-
+    # Add the document title to the prompt
+    prompt += f"\nhere's a hint about the information source (don't use as is): {document_title.split('_')[-1]}\n"
+    prompt += f"<Form Fields>\n{keyval}\n</Form Fields>\n\n"
+    with open("prompt.txt", "w") as f:
+        f.write(prompt)
     try:
-        response = ollama.chat(
+        # Initialize messages list with previous chat history if available
+        messages = []
+        
+        # Add the current prompt
+        messages.append({"role": "user", "content": prompt})
+       
+        response = ollama.Client().chat(
             model=model_name,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             options={
                 "temperature": 0.7,
-                "seed": randint(0, 5000),
+                "seed": randint(0, 1000000),
+                "top_p": 1,
+                "top_k": 0,
+                "min_p": 0.05,
             },
             format="json",
         )
         generated_text = response["message"]["content"].strip()
-
         # Parse the JSON response
         results = json.loads(generated_text)
 
@@ -88,7 +99,7 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
             value = results.get(field["name"], field["value"])
 
             # Process Faker directives
-            if isinstance(value, str) and value.startswith("faker:"):
+            if isinstance(value, str) and value.lower().startswith("faker:"):
                 faker_method = value.split(":", 1)[1].strip()
                 try:
                     # Get the method from faker and call it
@@ -100,6 +111,7 @@ def generate_form_values(fields, model_name, variation=1, variation_hash=None):
             else:
                 field["value"] = value
 
+        # Return the updated fields and the updated chat history
         return text_fields
     except Exception as e:
         print(f"Error generating values: {e}")
@@ -200,6 +212,9 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
 
     # Read form fields from CSV
     print(f"Reading form fields from {input_csv}")
+
+    # Initialize variation hash
+    current_hash = None
     fields_by_page = read_form_fields_from_csv(input_csv)
 
     if not fields_by_page:
@@ -210,10 +225,7 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
             print(f"Fields found on page {page_key}:")
             for field in fields:
                 print(f"  {field['name']}")
-
-    # Initialize variation hash
-    current_hash = None
-
+    
     # Generate variations
     for variation in range(1, variations + 1):
         # Generate or update hash for this variation
@@ -252,11 +264,12 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations):
                 updated_fields_by_page = {}
                 for page_key, fields in fields_by_page.items():
                     print(f"Processing {page_key}")
+                    # Pass the current chat history for this page
                     updated_fields = generate_form_values(
-                        fields, model_name, variation, current_hash
+                        copy.deepcopy(fields), model_name, base_name, variation, current_hash,
                     )
                     updated_fields_by_page[page_key] = updated_fields
-
+                    
                 # Create version 1: Update the PDF form fields (current behavior)
                 update_pdf_form(input_pdf, updated_fields_by_page, output_pdf_form)
                 print(f"Created editable PDF version at: {output_pdf_form}")
