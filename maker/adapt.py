@@ -7,6 +7,7 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 import torchvision.ops as ops
+from pathlib import Path
 
 from ocr import fits_to_imgs
 
@@ -23,9 +24,11 @@ def get_gt_arr(gt_dir: str) -> list[dict]:
 
     # For each PDF file, get its corresponding gt data
     for pdf_file in pdf_files:
-        json_file = re.sub('.pdf$', '.json', pdf_file)
+        pdf_path = Path(pdf_file)
+        json_file_name = f"{pdf_path.stem}.json"
+        json_path = pdf_path.parent / json_file_name
 
-        with open(json_file, 'r') as f:
+        with open(json_path, 'r') as f:
             gt_data = json.load(f)
 
         gt_data['images'] = fits_to_imgs(pdf_file)
@@ -59,8 +62,6 @@ def get_template_from_gt_arr(gt_arr: list[dict]) -> dict:
                 page_height = page_data['height']
                 
                 field_copy = field.copy()
-                # Remove text
-                del field_copy['text']
                 # Normalize xywh values
                 field_copy['x'] /= page_width
                 field_copy['y'] /= page_height
@@ -175,7 +176,7 @@ def adapt_boxes(d_xyxyn:torch.Tensor, t_xyxyn:torch.Tensor):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Adapt a template (constructed from gt) to each gt"
+        description="Construct a template from gt files, and adapt the template for each gt instance"
     )
 
     parser.add_argument(
@@ -196,6 +197,7 @@ def main():
 
     gt_arr = get_gt_arr(args.input_dir)
 
+    # NOTE: xywh values from get_template_from_gt_arr is normalized!
     template = get_template_from_gt_arr(gt_arr)
 
     adapted_templates = []
@@ -205,35 +207,38 @@ def main():
         images = gt['images']
         per_page = gt['per_page']
 
-        for page, page_data in enumerate(per_page):
+        adapted_template = gt.copy()
+        adapted_template['fields'] = []
+        
+        for page_no, page in enumerate(per_page):
 
             template_fields = [
-                field for field in template['fields'] if field['page'] == page
+                field for field in template['fields'] if field['page'] == page_no
             ]
 
             if not template_fields:
                 break
 
-            img = images[page]
+            img = images[page_no]
 
             adapted_fields = adapt_template_fields(template_fields, yolo, img)
 
-            page_width = page_data['width']
-            page_height = page_data['height']
-            # Set text using ocr
-            # field['text'] = ???
-            # Denormalize xywh values
+            page_width = page['width']
+            page_height = page['height']
             for field in adapted_fields:
+                # Remove text from field
+                del field['text']
+                # Set text using ocr
+                # field['text'] = ???
+                # Denormalize xywh values
                 field['x'] *= page_width
                 field['y'] *= page_height
                 field['w'] *= page_width
                 field['h'] *= page_height
 
-        adapted_templates.append({
-            'filename': gt['filename'],
-            'fields': adapted_fields,
-            'per_page': per_page
-        })
+            adapted_template['fields'].append(adapted_fields)
+
+        adapted_templates.append(adapted_template)
 
     print(adapted_templates)
 
