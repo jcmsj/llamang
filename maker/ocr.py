@@ -4,6 +4,7 @@ from PIL import Image
 import fitz
 from pytesseract import image_to_data
 from PIL import ImageDraw
+import argparse
 
 TARGET_DPI = 300
 # According to the documentation, this is the default DPI used by fitz
@@ -106,11 +107,12 @@ def implode_boxes(xywht: list[tuple]) -> str:
     return " ".join([box[4] for box in xywht if box[4] != '']).strip()
  
 def enclose_boxes(xywht: list[tuple]) -> tuple:
-    """Enclose a list of boxes within a bounding box."""
+    """Enclose a list of boxes within a bounding box.""" 
     # return (min_x, min_y, width, height)
     # find max and min x and y that would enclose all the boxes
     # filter empty text boxes
      # will throw if xywht is empty
+    xywht = [box for box in xywht if box[4] != '']
     min_x = min([box[0] for box in xywht])
     min_y = min([box[1] for box in xywht])
     max_x = max([box[0] + box[2] for box in xywht])
@@ -163,18 +165,62 @@ def to_dict(images: list[Image.Image], data: list[dict], pdf_path: str):
         "per_page": [{"width": img.width, "height": img.height} for img in images],
     }
 
+def process_pdf(pdf_path, output_dir=None, show_image=False):
+    """Process a single PDF file and generate JSON output"""
+    print(f"Processing {pdf_path}")
+    try:
+        adjusted = update_rects_to_actual_textbox(pdf_path)
+        images = fits_to_imgs(pdf_path)
+        
+        # Determine output JSON path
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            json_path = os.path.join(output_dir, f"{base_name}.json")
+        else:
+            json_path = f"{base_name}.json"
+        
+        # Save JSON data
+        json.dump(to_dict(images, adjusted, pdf_path), open(json_path, "w"), indent=2)
+        print(f"Created JSON file at: {json_path}")
+        
+        # Show image with boxes if requested
+        if show_image and images:
+            img = plot_boxes(images[0], adjusted, 0)
+            img.show()
+            
+    except OCRException as e:
+        print(f"Error processing {pdf_path}: {e}")
+    except Exception as e:
+        print(f"Unexpected error processing {pdf_path}: {e}")
 
 def main():
     """Run if main module"""
-    pdf_path = r"D:\code\llamang\maker\aia0001_Declaration (37 CFR 1.63) For Utility Or Design Ap_flat_20250311_133934.pdf"
-    adjusted = update_rects_to_actual_textbox(pdf_path)
-    images = fits_to_imgs(pdf_path)
-
-    json.dump(to_dict(images, adjusted, pdf_path), open("output.json", "w"), indent=2)
-
-    img = plot_boxes(images[0], adjusted, 0)
-    img.show()
-
+    parser = argparse.ArgumentParser(
+        description="Process PDFs and generate JSON files with OCR data"
+    )
+    parser.add_argument("input", help="Path to the input PDF file or directory containing PDFs")
+    parser.add_argument("-o", "--output", help="Path to the output directory for JSON files")
+    parser.add_argument("-s", "--show", action="store_true", help="Show images with bounding boxes")
+    args = parser.parse_args()
+    
+    # Check if input is a directory or a file
+    if os.path.isdir(args.input):
+        # Process all PDFs in directory
+        pdf_files = [os.path.join(args.input, f) for f in os.listdir(args.input) 
+                     if f.lower().endswith('.pdf') and os.path.isfile(os.path.join(args.input, f))]
+        
+        if not pdf_files:
+            print(f"No PDF files found in {args.input}")
+            return
+            
+        for pdf_path in pdf_files:
+            process_pdf(pdf_path, args.output, args.show)
+    else:
+        # Process a single PDF file
+        process_pdf(args.input, args.output, args.show)
+    
+    print("Processing complete!")
 
 if __name__ == "__main__":
     main()

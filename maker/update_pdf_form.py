@@ -7,7 +7,10 @@ def update_pdf_form(pdf_path:str, fields_by_page:dict[str,dict], output_path:str
 
     for page_key, fields in fields_by_page.items():
         # Extract page number from the key (e.g., "page_1" -> 0)
-        page_num = int(page_key.split('_')[1]) - 1
+        try:
+            page_num = int(page_key.split('_')[1]) - 1
+        except Exception:
+            page_num = 0
 
         if page_num < len(doc):
             page = doc[page_num]

@@ -26,7 +26,7 @@ def generate_hash(previous_hash=None):
         # Derive a new hash from the previous one
         return hash(str(previous_hash) + str(random()))
 
-def generate_form_values(fields, model_name, document_title, fallback_model=None, min_fill_percentage=0.6):
+def generate_form_values(fields, model_name, document_title, fallback_model=None, min_fill_percentage=0.6, previous_values=None):
     """Generate new values for form fields using Ollama."""
     # Group fields by type
     text_fields = [field for field in fields if field["type"] == "Text"]
@@ -42,18 +42,19 @@ def generate_form_values(fields, model_name, document_title, fallback_model=None
     faker = Faker()
 
     # Construct prompt
-    prompt = ""
+    prompt = f"ROLE: You're normally a `{faker.job()}+{faker.job()}`, but today you're an assistant at a Patent Office"
 
     # Final output as json
     steps = [
-        f"ROLE: You're normally a `{faker.job()}`, but today you're an assistant at a Patent Office",
-        "Your task is to make random data for each field, maintaining coherence between the given fields",
+        "Your task is to suggest random data for each field, while maintaining coherence between the given information",
         "Infer field value based on field name",
         "you may reuse values based on field name",
         "don't use unusual characters for values",
-        f"Be very creative for named entities",
+        f"Be very creative for named entities, but don't use names that are too common",
+        "If possible use data related to: infrastructure, railway, transportation, government compliance, or any other related field",
         "field values should not be nested json",
         "Properly escape commas that would disrupt the JSON format",
+        # "You may use the faker tool to generate realistic data, but still adjust the return value",
         "No need to provide explanations or context",
         "Output as a JSON object with field names as keys and your generated value as string"
     ]
@@ -65,6 +66,20 @@ def generate_form_values(fields, model_name, document_title, fallback_model=None
     # Add the document title to the prompt
     prompt += f"\nhere's a hint about the information source (don't use as is): {document_title.split('_')[-1]}\n"
     prompt += f"<Form Fields>\n{keyval}\n</Form Fields>\n\n"
+    
+    # If we have previous values, add them as examples for the model
+    if previous_values:
+        example_values = {}
+        for field in previous_values:
+            if field["type"] == "Text" and field["value"]:
+                example_values[field["name"]] = field["value"]
+        
+        if example_values:
+            prompt += f"<Example Values from Previous Generation>\n"
+            prompt += f"Use these as inspiration but create new variations. Don't copy exactly:\n"
+            prompt += json.dumps(example_values, indent=2) + "\n"
+            prompt += "</Example Values>\n\n"
+    
     with open("prompt.txt", "w") as f:
         f.write(prompt)
     
@@ -81,7 +96,7 @@ def generate_form_values(fields, model_name, document_title, fallback_model=None
                 model=current_model,
                 messages=messages,
                 options={
-                    "temperature": 0.7,
+                    "temperature": 0.8,
                     "seed": randint(0, 1000000),
                     "top_p": 1,
                     "top_k": 0,
@@ -177,20 +192,31 @@ def main():
         default=1,
         help="The starting variation number (default: 1)",
     )
-
     parser.add_argument(
         "-d", "--directory-mode", 
         action="store_true",
         help="Process all PDF files in the input directory"
     )
+    parser.add_argument(
+        "--resume", 
+        action="store_true",
+        help="Resume processing from last known state (directory mode only)"
+    )
+    parser.add_argument(
+        "--tracking-file",
+        default="processing_progress.json",
+        help="JSON file to track processing progress (default: processing_progress.json)"
+    )
     args = parser.parse_args()
-    # Check if we're in directory mode
+
     # Generate new values page by page
     print(f"Generating new values with {args.model} model")
     if args.fallback_model:
         print(f"Using {args.fallback_model} as fallback if less than {args.min_fill_percent:.1%} of fields are filled")
     
     failed_logs = open("failed_logs.txt", "w")
+    
+    # Handle directory mode with tracking
     if args.directory_mode:
         if not os.path.isdir(args.input):
             print(f"Error: {args.input} is not a directory")
@@ -199,7 +225,21 @@ def main():
         if not args.output or not os.path.isdir(args.output):
             print("Error: In directory mode, output must be a valid directory")
             return
-            
+        
+        # Load or initialize tracking data
+        tracking_data = {}
+        tracking_file = args.tracking_file
+        
+        if args.resume and os.path.exists(tracking_file):
+            try:
+                with open(tracking_file, 'r') as f:
+                    tracking_data = json.load(f)
+                print(f"Resumed processing from tracking file: {tracking_file}")
+            except Exception as e:
+                print(f"Error loading tracking file: {e}")
+                print("Starting with fresh tracking data")
+                tracking_data = {}
+        
         # Find all PDF files in the directory (non-recursive)
         pdf_files = [os.path.join(args.input, f) for f in os.listdir(args.input) 
                     if f.lower().endswith('.pdf') and os.path.isfile(os.path.join(args.input, f))]
@@ -207,20 +247,63 @@ def main():
         if not pdf_files:
             print(f"No PDF files found in {args.input}")
             return
-            
-        # Process each PDF file
+        
+        # Process each PDF file with tracking
         for pdf_file in pdf_files:
+            base_name = os.path.splitext(os.path.basename(pdf_file))[0]
             print(f"\nProcessing {pdf_file}")
+            
+            # Determine starting variation from tracking data if in resume mode
+            if args.resume and base_name in tracking_data:
+                completed_variations = tracking_data[base_name].get("completed_variations", 0)
+                current_variation = completed_variations + 1
+                print(f"Resuming from variation {current_variation} of {args.variations}")
+                if current_variation > args.variations:
+                    print(f"All {args.variations} variations already completed for {base_name}, skipping")
+                    continue
+            else:
+                # If not resuming or no tracking data for this file, start from variation 1
+                current_variation = 1
+                
             try:
-                process_pdf(pdf_file, args.input_csv, args.output,
-                       args.model, args.variations, args.fallback_model, args.min_fill_percent, args.startvariation)
+                process_pdf(
+                    pdf_file, 
+                    args.input_csv, 
+                    args.output,
+                    args.model, 
+                    args.variations, 
+                    args.fallback_model, 
+                    args.min_fill_percent, 
+                    current_variation
+                )
+                
+                # Update tracking data
+                if base_name not in tracking_data:
+                    tracking_data[base_name] = {}
+                tracking_data[base_name]["completed_variations"] = args.variations
+                tracking_data[base_name]["last_processed"] = datetime.now().isoformat()
+                
+                # Save tracking data after each file is processed
+                with open(tracking_file, 'w') as f:
+                    json.dump(tracking_data, f, indent=2)
+                    
             except OCRException as e:
                 print(f"Error processing {pdf_file}: {e}")
                 failed_logs.write(f"{pdf_file}: {e}\n")
+                
+                # Update tracking with failure info
+                if base_name not in tracking_data:
+                    tracking_data[base_name] = {}
+                tracking_data[base_name]["error"] = str(e)
+                tracking_data[base_name]["failed_at"] = datetime.now().isoformat()
+                
+                # Save tracking data after each failure
+                with open(tracking_file, 'w') as f:
+                    json.dump(tracking_data, f, indent=2)
     else:
         # Process a single PDF file
         process_pdf(args.input, args.input_csv, args.output, 
-                   args.model, args.variations, args.fallback_model, args.min_fill_percent)
+                   args.model, args.variations, args.fallback_model, args.min_fill_percent, args.startvariation)
 
     print("\nAll operations completed!")
 
@@ -255,6 +338,9 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations, fallba
     # Initialize variation hash
     current_hash = None
     fields_by_page = read_form_fields_from_csv(input_csv)
+    
+    # Store example values from first successful generation for each page
+    example_values_by_page = {}
 
     if not fields_by_page:
         raise OCRException("No form fields found in the CSV")
@@ -266,9 +352,17 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations, fallba
                 print(f"  {field['name']}")
     
     # Generate variations
+    current_model = model_name
     for variation in range(start_variation, variations + 1):
         # Generate or update hash for this variation
         should_redo = 10 # maximum number of retries
+        # Use our best model for the first variation
+        if variation == 1:
+            current_model = "qwen2.5:7b-instruct-q4_K_M"
+        else:
+            current_model = model_name
+        
+            print("Overriding model for first variation")
         while should_redo:
             try:
                 current_hash = generate_hash(current_hash)
@@ -303,14 +397,28 @@ def process_pdf(input_pdf, input_csv, output_dir, model_name, variations, fallba
                 updated_fields_by_page = {}
                 for page_key, fields in fields_by_page.items():
                     print(f"Processing {page_key}")
-                    # Generate form values with fallback model support
+                    # For subsequent variations, use the example values from the first successful one
+                    previous_values = example_values_by_page.get(page_key) if variation > 1 else None
+                    
+                    # If this is the first variation or we don't have examples yet
+                    if previous_values:
+                        print(f"Using examples from previous successful generation for {page_key}")
+                    
+                    # Generate form values with example values from previous generations
+
                     updated_fields = generate_form_values(
                         copy.deepcopy(fields), 
-                        model_name, 
+                        current_model, 
                         base_name,
                         fallback_model,
-                        min_fill_percent
+                        min_fill_percent,
+                        previous_values
                     )
+                    
+                    # Store the first successful generation as example for future variations
+                    if variation == 1 and page_key not in example_values_by_page:
+                        example_values_by_page[page_key] = copy.deepcopy(updated_fields)
+                        
                     updated_fields_by_page[page_key] = updated_fields
                     
                 # Create version 1: Update the PDF form fields (current behavior)
