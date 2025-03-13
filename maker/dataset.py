@@ -3,26 +3,29 @@ import argparse
 import os
 import json
 from pathlib import Path
+from typing import Iterator
 
 from ultralytics import YOLO
 from PIL import Image
 import torch
 
-from adapt import get_gt_arr, get_template_from_gt_arr, adapt_template_fields
+from adapt import get_gt_iter, get_template_from_gt, adapt_template_fields
 from ocr import image_to_xywht, implode_boxes
 
-def adapt_template(template: dict, gt_arr: list[dict], yolo: YOLO) -> list[dict]:
+def get_adapted_iter(template: dict, gt_dir: str, yolo: YOLO) -> Iterator[dict]:
     """
     Adapts template to gt instances
     - To be used for adapted template evaluation
     - XYWH VALUES FROM `template` MUST BE NORMALIZED!!!
     - The output is denormalized based on the gt per_page data
-    - Returns an adapted template per gt instance
+    - Yields an adapted template per gt instance
     """
 
     adapted_templates = []
 
-    for gt in gt_arr:
+    gt_iter = get_gt_iter(gt_dir, True)
+
+    for gt in gt_iter:
 
         images = gt['images']
         per_page = gt['per_page']
@@ -60,23 +63,24 @@ def adapt_template(template: dict, gt_arr: list[dict], yolo: YOLO) -> list[dict]
 
             adapted_template['fields'].extend(adapted_fields)
 
-        adapted_templates.append(adapted_template)
-        
-    return adapted_templates
+        yield adapted_template
 
 
-def overlay_template(template: dict, gt_arr: list[dict]) -> list[dict]:
+
+def get_overlaid_iter(template: dict, gt_dir: str) -> Iterator[dict]:
     """
     Overlays template to gt instances
     - To be used for non-adapted template evaluation
     - XYWH VALUES FROM `template` MUST BE NORMALIZED!!!
     - The output is denormalized based on the gt per_page data
-    - Returns an overlaid template per gt instance
+    - Yields an overlaid template per gt instance
     """
 
     overlaid_templates = []
 
-    for gt in gt_arr:
+    gt_iter = get_gt_iter(gt_dir, True)
+
+    for gt in gt_iter:
 
         images = gt['images']
         per_page = gt['per_page']
@@ -114,13 +118,13 @@ def overlay_template(template: dict, gt_arr: list[dict]) -> list[dict]:
 
             overlaid_template['fields'].extend(overlaid_fields)
 
-        overlaid_templates.append(overlaid_template)
+        yield overlaid_template
 
-    return overlaid_templates
 
-def to_coco(gt_arr: dict, images = [], image_ids = {}, categories = [], category_ids = {}, image_data = []) -> dict:
+
+def to_coco(gt_iter: Iterator[dict], images = [], image_ids = {}, categories = [], category_ids = {}) -> dict:
     """
-    Converts gt list format to COCO format
+    Converts gt format to COCO format
     - NOTE: When working with shared objects, this does not make copies!
 
     gt format:
@@ -185,11 +189,9 @@ def to_coco(gt_arr: dict, images = [], image_ids = {}, categories = [], category
 
     annotations = []
 
-    for gt in gt_arr:
+    for gt in gt_iter:
 
         pdf_path = Path(gt['filename'])
-        pdf_images = gt['images']
-
         fields = gt['fields']
         per_page = gt['per_page']
 
@@ -217,7 +219,6 @@ def to_coco(gt_arr: dict, images = [], image_ids = {}, categories = [], category
                     'height': page_height,
                     'file_name': image_file_name
                 })
-                image_data.append(pdf_images[page_no])
             
             for field in page_fields:
                 category_name = field['name']
@@ -259,38 +260,29 @@ def to_coco(gt_arr: dict, images = [], image_ids = {}, categories = [], category
     return coco_dataset
 
 
-def generate_datasets(template: dict, gt_arr: list[dict], yolo: YOLO, output_dir: str = None) -> tuple[dict]:
+
+def generate_datasets(template: dict, gt_dir: str, yolo: YOLO, output_dir: str = None) -> tuple[dict]:
     """
-    Generates coco gt, adapted dt, and overlaid dt datasets from template and gt_arr
+    Generates coco gt, adapted dt, and overlaid dt datasets from template and gt_dir
     - optionally saves the COCO datasets if output_dir is provided
     - XYWH VALUES FROM `template` MUST BE NORMALIZED!!!
     """
 
-    print('Adapting templates...')
-    # Adapted templates
-    adapted_templates = adapt_template(template, gt_arr, yolo)
+    # Shared objects between COCO datasets
+    images = [] # Image list
+    image_ids = {} # Dict to store image_file_name -> image_id
+    categories = [] # Category list (from COCO format)
+    category_ids = {} # Dict to store category_name -> category_id mappings
 
-    print('Overlaying templates...')
-    # Non-adapted templates
-    overlaid_templates = overlay_template(template, gt_arr)
-
-    # Shared objects between datasets
-
-    # Image list
-    images = []
-    # Dict to store image_file_name -> image_id
-    image_ids = {}
-    # Category list
-    categories = []
-    # Dict to store category_name -> category_id mappings
-    category_ids = {}
-    # Image data list
-    image_data = []
-
-    print('Converting to COCO datasets...')
-    coco_gt = to_coco(gt_arr, images, image_ids, categories, category_ids, image_data)
-    adapted_dt = to_coco(adapted_templates, images, image_ids, categories, category_ids, image_data)
-    overlaid_dt = to_coco(overlaid_templates, images, image_ids, categories, category_ids, image_data)
+    print('Creating COCO dataset for the ground truth...')
+    gt_iter = get_gt_iter(gt_dir)
+    coco_gt = to_coco(gt_iter, images, image_ids, categories, category_ids)
+    print('Creating COCO dataset for adapted templates...')
+    adapted_iter = get_adapted_iter(template, gt_dir, yolo)
+    adapted_dt = to_coco(adapted_iter, images, image_ids, categories, category_ids)
+    print('Creating COCO dataset for overlaid templates...')
+    overlaid_iter = get_overlaid_iter(template, gt_dir)
+    overlaid_dt = to_coco(overlaid_iter, images, image_ids, categories, category_ids)
 
     # If output_dir is specified, save the images and the dataset json files
     if output_dir is not None:
@@ -312,10 +304,17 @@ def generate_datasets(template: dict, gt_arr: list[dict], yolo: YOLO, output_dir
 
         # Save images
         print('Saving images...')
-        for image in images:
-            image_path = images_path / image['file_name']
-            img = image_data[image['id']]
-            img.save(image_path)
+        gt_iter = get_gt_iter(gt_dir, True)
+        for gt in gt_iter:
+            pdf_path = Path(gt['filename'])
+            pdf_images = gt['images']
+            per_page = gt['per_page']
+            for page_no, page in enumerate(per_page):
+                image_file_name = f"{pdf_path.stem}_{page_no}.jpg"
+                if image_file_name in image_ids:
+                    image_path = images_path / image_file_name
+                    img = pdf_images[page_no]
+                    img.save(image_path)
 
     return coco_gt, adapted_dt, overlaid_dt
 
@@ -348,12 +347,12 @@ def main():
 
     yolo = YOLO(args.model, task="detect")
 
-    gt_arr = get_gt_arr(args.input_dir)
+    gt_dir = args.input_dir
 
-    # NOTE: xywh values from get_template_from_gt_arr is normalized!
-    template = get_template_from_gt_arr(gt_arr)
+    # NOTE: xywh values from get_template_from_gt is normalized!
+    template = get_template_from_gt(gt_dir)
 
-    coco_gt, adapted_dt, overlaid_dt = generate_datasets(template, gt_arr, yolo, args.output_dir)
+    coco_gt, adapted_dt, overlaid_dt = generate_datasets(template, gt_dir, yolo, args.output_dir)
 
     print('COCO datasets saved in: ' + args.output_dir)
 

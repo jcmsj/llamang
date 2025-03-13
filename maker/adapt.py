@@ -2,6 +2,7 @@ import re
 import argparse
 import os
 import json
+from typing import Iterator
 
 from ultralytics import YOLO
 from PIL import Image
@@ -11,12 +12,10 @@ from pathlib import Path
 
 from ocr import fits_to_imgs
 
-def get_gt_arr(gt_dir: str) -> list[dict]:
+def get_gt_iter(gt_dir: str, include_images: bool = False) -> Iterator[dict]:
     '''
-    Get all gt as a list with images attached
+    Get all gt as an iterator optionally with images attached
     '''
-
-    gt_arr = []
 
     # Find all PDF files in the directory (non-recursive)
     pdf_files = [os.path.join(gt_dir, f) for f in os.listdir(gt_dir) 
@@ -28,24 +27,32 @@ def get_gt_arr(gt_dir: str) -> list[dict]:
         json_file_name = f"{pdf_path.stem}.json"
         json_path = pdf_path.parent / json_file_name
 
+        # If the standard json file doesn't exist, try replacing _flat_ with _fields_
+        if not os.path.exists(json_path):
+            alt_name = f"{pdf_path.stem.replace('_flat_', '_fields_')}.json"
+            alt_path = pdf_path.parent / alt_name
+            if os.path.exists(alt_path):
+                json_path = alt_path
+
         with open(json_path, 'r') as f:
             gt_data = json.load(f)
 
-        gt_data['images'] = fits_to_imgs(pdf_file)
+        if include_images:
+            gt_data['images'] = fits_to_imgs(pdf_file)
 
-        gt_arr.append(gt_data)
-                
-    return gt_arr
+        yield gt_data
 
-def get_template_from_gt_arr(gt_arr: list[dict]) -> dict:
+def get_template_from_gt(gt_dir: str) -> dict:
     '''
-    Create a template based on the given gt list
+    Create a template based on the given gt dir
     '''
 
     template_fields = []
     found_fields = {}
 
-    for gt in gt_arr:
+    gt_iter = get_gt_iter(gt_dir)
+
+    for gt in gt_iter:
 
         per_page = gt['per_page']
 
@@ -175,76 +182,3 @@ def adapt_boxes(d_xyxyn:torch.Tensor, t_xyxyn:torch.Tensor):
             adapted_count[t_id] += 1
 
     return a_xyxyn, adapted_count
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Construct a template from gt files, and adapt the template for each gt instance"
-    )
-
-    parser.add_argument(
-        "-i", "--input-dir",
-        required=True,
-        help="Path of the input directory where the gt is stored"
-    )
-
-    parser.add_argument(
-        "-m", "--model",
-        required=True,
-        help="Path to the model to be used for detection (.onnx / .pt)"
-    )
-
-    args = parser.parse_args()
-
-    yolo = YOLO(args.model, task="detect")
-
-    gt_arr = get_gt_arr(args.input_dir)
-
-    # NOTE: xywh values from get_template_from_gt_arr is normalized!
-    template = get_template_from_gt_arr(gt_arr)
-
-    adapted_templates = []
-
-    for gt in gt_arr:
-
-        images = gt['images']
-        per_page = gt['per_page']
-
-        adapted_template = gt.copy()
-        adapted_template['fields'] = []
-        
-        for page_no, page in enumerate(per_page):
-
-            template_fields = [
-                field for field in template['fields'] if field['page'] == page_no
-            ]
-
-            if not template_fields:
-                continue
-
-            img = images[page_no]
-
-            adapted_fields = adapt_template_fields(template_fields, yolo, img)
-
-            page_width = page['width']
-            page_height = page['height']
-            for field in adapted_fields:
-                # Remove text from field
-                del field['text']
-                # Set text using ocr
-                # field['text'] = ???
-                # Denormalize xywh values
-                field['x'] *= page_width
-                field['y'] *= page_height
-                field['w'] *= page_width
-                field['h'] *= page_height
-
-            adapted_template['fields'].append(adapted_fields)
-
-        adapted_templates.append(adapted_template)
-
-    print(adapted_templates)
-
-    return
-
-if __name__ == "__main__":
-    main()

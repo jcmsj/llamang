@@ -7,8 +7,6 @@ from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
 from Levenshtein import ratio
 
-from dataset import generate_datasets
-
 # Extend coco class to accept dict
 class COCO_from_dict(COCO):
     def __init__(self, annotation_dict):
