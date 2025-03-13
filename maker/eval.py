@@ -1,8 +1,11 @@
 import argparse
+import json
 
 import numpy as np
+import torch
 from pycocotools.cocoeval import COCOeval
 from pycocotools.coco import COCO
+from Levenshtein import ratio
 
 from dataset import generate_datasets
 
@@ -111,7 +114,7 @@ def get_mP(eval):
 
 
 
-def get_metrics(coco_gt, coco_dt, steps=21):
+def get_metrics(cocoGt, cocoDt, steps=21):
 
   if (steps - 1) % 20 != 0:
     raise Exception('(steps - 1) must be divisible by 20')
@@ -127,7 +130,7 @@ def get_metrics(coco_gt, coco_dt, steps=21):
   metrics = {}
 
   # Perform cocoeval
-  eval = do_cocoeval(coco_gt, coco_dt, params)
+  eval = do_cocoeval(cocoGt, cocoDt, params)
 
   # Get recall, precision and F1
   R = get_mR(eval)[0, 0, 0].item()
@@ -144,6 +147,65 @@ def get_metrics(coco_gt, coco_dt, steps=21):
 
   return metrics
 
+
+
+def get_ocr_metrics(coco_gt, coco_dt):
+  images = coco_gt['images']
+  gt_annots = coco_gt['annotations']
+  dt_annots = coco_dt['annotations']
+
+  device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+  gt_img = torch.tensor([
+    annot['image_id'] for annot in gt_annots
+  ], dtype=torch.int, device=device)
+
+  dt_img = torch.tensor([
+    annot['image_id'] for annot in dt_annots
+  ], dtype=torch.int, device=device)
+
+  gt_ctg = torch.tensor([
+    annot['category_id'] for annot in gt_annots
+  ], dtype=torch.int, device=device)
+
+  dt_ctg = torch.tensor([
+    annot['category_id'] for annot in dt_annots
+  ], dtype=torch.int, device=device)
+
+  gt_img = gt_img.unsqueeze(1)
+  dt_img = dt_img.unsqueeze(0)
+
+  gt_ctg = gt_ctg.unsqueeze(1)
+  dt_ctg = dt_ctg.unsqueeze(0)
+
+  # Find the gt and dt annotations with common image_id and category_id
+  same_img_and_ctg = (gt_img == dt_img) & (gt_ctg == dt_ctg)
+  gt_dt_pairs = torch.nonzero(same_img_and_ctg, as_tuple=False)
+
+  # Get similarity scores of texts between gt and dt
+  similarities = [
+    ratio(
+      gt_annots[gt_dt_pair[0].item()]['text'],
+      dt_annots[gt_dt_pair[1].item()]['text'],
+    ) for gt_dt_pair in gt_dt_pairs
+  ]
+  similarities = torch.tensor(similarities, dtype=torch.float32, device=device)
+
+  # aveSim = average levenshtein similarity
+  aveSim = torch.mean(similarities).item()
+
+  # For each annotation that exist in either gt and dt annotations but not both, add zero to similarities
+  gt_zeros = torch.zeros(torch.sum(torch.all(same_img_and_ctg == False, dim=0)), dtype=torch.float32, device=device)
+  dt_zeros = torch.zeros(torch.sum(torch.all(same_img_and_ctg == False, dim=1)), dtype=torch.float32, device=device)
+  similarities = torch.cat((similarities, gt_zeros, dt_zeros), dim=0)
+
+  # aveSimMiss = average levenshtein similarity including missing fields
+  aveSimMiss = torch.mean(similarities).item()
+
+  return {
+    "Average Levenshtein Similarity": aveSim,
+    "Average Levenshtein Similarity (Including missing fields)": aveSimMiss
+  }
 
 
 def main():
@@ -165,16 +227,23 @@ def main():
 
     args = parser.parse_args()
 
-    # cocoGt = COCO_from_dict(coco_gt)
-    # cocoDt = COCO_from_dict(coco_dt)
+    with open(args.coco_gt, 'r') as f:
+      coco_gt = json.load(f)
 
-    cocoGt = COCO(args.coco_gt)
-    cocoDt = COCO(args.coco_dt)
+    with open(args.coco_dt, 'r') as f:
+      coco_dt = json.load(f)
+
+    cocoGt = COCO_from_dict(coco_gt)
+    cocoDt = COCO_from_dict(coco_dt)
 
     metrics = get_metrics(cocoGt, cocoDt)
 
-    print('\n\nMetrics for adapted templates:')
+    print('\nMetrics for field appropriateness:')
     print(metrics)
+
+    ocr_metrics = get_ocr_metrics(coco_gt, coco_dt)
+    print('\nMetrics for ocr:')
+    print(ocr_metrics)
 
 
 if __name__ == "__main__":

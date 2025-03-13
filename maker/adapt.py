@@ -87,7 +87,7 @@ def adapt_template_fields(template_fields: list[dict], yolo: YOLO, img: Image.Im
     '''
 
     # step 1: Use YOLO to get document fields (boxes)
-    document_boxes = yolo.predict(source=[img], imgsz=1024, conf=0.25)[0].boxes
+    document_boxes = yolo.predict(source=[img], imgsz=1024, conf=0.25, save=True)[0].boxes
     
     # step 2: Adapt template fields with document fields
 
@@ -124,6 +124,7 @@ def adapt_template_fields(template_fields: list[dict], yolo: YOLO, img: Image.Im
         a_field['w'] = w
         a_field['h'] = h
 
+    """
     # Print analytics
     adapted_fields_count = torch.count_nonzero(adapted_count).item()
     print("---- Start of Analytics ----")
@@ -133,6 +134,7 @@ def adapt_template_fields(template_fields: list[dict], yolo: YOLO, img: Image.Im
     print(f"Ratio A/T: {round(adapted_fields_count/len(template_fields),2)}")
     print(f"Ratio A/D: {round(adapted_fields_count/len(document_boxes),2)}")
     print("---- End of Analytics ----")
+    """
     
     return adapted_fields
 
@@ -217,7 +219,7 @@ def main():
             ]
 
             if not template_fields:
-                break
+                continue
 
             img = images[page_no]
 
